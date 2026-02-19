@@ -92,11 +92,11 @@ Structure-preserving artistic image translation into a strict binary look:
 
 | Preset | Artistic Description | Edge Weight | Fill Weight | Texture Weight | Stroke Thickness | Grain Scale | White Target | Dither |
 |---|---|---:|---:|---:|---:|---:|---:|---|
-| Neon Contour | Sharp contour strokes with sparse highlights | 0.82 | 0.22 | 0.25 | 1 | 5 | 12% | Floyd |
-| Silhouette Etch | Thicker lines with silhouette readability | 0.56 | 0.45 | 0.18 | 2 | 8 | 19% | Bayer |
-| Industrial Noise | Dense grit and wireframe texture for busy scenes | 0.66 | 0.40 | 0.44 | 1 | 4 | 26% | Floyd |
-| Crowd Ghost | Soft clustered micro-strokes for people/groups | 0.60 | 0.34 | 0.30 | 1 | 6 | 16% | Bayer |
-| Topo Stroke | Contour-band look with flowing motion | 0.70 | 0.30 | 0.35 | 1 | 3 | 21% | Floyd |
+| Neon Contour | Ghost contour bands with airy negative space | 0.82 | 0.20 | 0.20 | 1 | 7 | 13% | Floyd |
+| Silhouette Etch | Readable subject shape with sparse etched ghost detail | 0.50 | 0.28 | 0.12 | 2 | 8 | 15% | Bayer |
+| Industrial Noise | Busy scene abstraction with spaced glitch bands and grit | 0.62 | 0.30 | 0.50 | 1 | 5 | 16% | Floyd |
+| Crowd Ghost | Airy clustered micro-strokes with ghostly subject persistence | 0.54 | 0.20 | 0.32 | 1 | 7 | 12% | Bayer |
+| Topo Stroke | Flowing contour bands with drifting white islands | 0.66 | 0.24 | 0.28 | 1 | 4 | 15% | Floyd |
 
 ## Run Locally
 
@@ -126,3 +126,10 @@ Response JSON includes base64 PNG and metrics.
 - Current implementation is local classical CV only.
 - No external model hosting is required.
 - If stronger background rejection is needed later, you can add optional offline segmentation (e.g., MODNet/U2Net ONNX) before the current fallback gate.
+- Motion-ready pipeline split is available now:
+  - `analyzeImage(...)`: compute reusable image analysis maps once
+  - `renderFrameFromAnalysis(...)`: render a frame from cached analysis using optional `phase/flowStrength/jitter`
+  - `transformImage(...)`: current single-image wrapper around the two steps
+- Build outputs are split by mode to avoid dev/prod cache collisions:
+  - development: `.next-dev`
+  - production: `.next`

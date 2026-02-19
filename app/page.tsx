@@ -16,11 +16,11 @@ type Preset = {
 };
 
 const PRESETS: Preset[] = [
-  { id: 'neon-contour', name: 'Neon Contour', description: 'Sharp contour strokes with sparse highlights.' },
-  { id: 'silhouette-etch', name: 'Silhouette Etch', description: 'Thicker lines and readable silhouette support.' },
-  { id: 'industrial-noise', name: 'Industrial Noise', description: 'Dense gritty structure for busy scenes.' },
-  { id: 'crowd-ghost', name: 'Crowd Ghost', description: 'Soft clustered micro-strokes for people.' },
-  { id: 'topo-stroke', name: 'Topo Stroke', description: 'Contour-like flowing bands and medium density.' }
+  { id: 'neon-contour', name: 'Neon Contour', description: 'Ghost contour bands with airy negative space.' },
+  { id: 'silhouette-etch', name: 'Silhouette Etch', description: 'Readable silhouette with sparse etched halos.' },
+  { id: 'industrial-noise', name: 'Industrial Noise', description: 'Spaced glitch-band grit for complex backgrounds.' },
+  { id: 'crowd-ghost', name: 'Crowd Ghost', description: 'Most ghosty preset with clustered white dust strokes.' },
+  { id: 'topo-stroke', name: 'Topo Stroke', description: 'Flowing contour-island pattern with drifting structure.' }
 ];
 
 type TransformResponse = {

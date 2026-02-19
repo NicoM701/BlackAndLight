@@ -1,5 +1,7 @@
-﻿node_modules
+node_modules
 .next
+.next-dev
 .vercel
 *.log
 .DS_Store
+tsconfig.tsbuildinfo

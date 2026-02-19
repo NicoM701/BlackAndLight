@@ -6,6 +6,12 @@ export type TransformOptions = {
   presetId: PresetId;
 };
 
+export type MotionFrameOptions = {
+  phase?: number;
+  flowStrength?: number;
+  jitter?: number;
+};
+
 export type TransformResult = {
   png: Buffer;
   width: number;
@@ -14,10 +20,26 @@ export type TransformResult = {
   preset: PipelinePreset;
 };
 
-type SobelResult = {
+export type SobelResult = {
   mag: Float32Array;
   gx: Float32Array;
   gy: Float32Array;
+};
+
+export type LightTransfer = {
+  lockedTone: Float32Array;
+  rowGain: Float32Array;
+};
+
+export type AnalysisBundle = {
+  width: number;
+  height: number;
+  preset: PipelinePreset;
+  norm: Float32Array;
+  sobelRes: SobelResult;
+  mask: Float32Array;
+  lightTransfer: LightTransfer;
+  fallbackSegmentation: boolean;
 };
 
 const EPS = 1e-6;
@@ -209,7 +231,7 @@ function estimateForegroundMask(
     hist[Math.round(score[i] * 255)] += 1;
   }
 
-  const target = score.length * 0.74;
+  const target = score.length * 0.64;
   let acc = 0;
   let thrBin = 160;
   for (let i = 0; i < 256; i += 1) {
@@ -231,7 +253,7 @@ function estimateForegroundMask(
   }
 
   const ratio = white / score.length;
-  const failed = ratio < 0.03 || ratio > 0.92;
+  const failed = ratio < 0.03 || ratio > 0.86;
 
   if (failed) {
     return { mask: new Float32Array(score.length).fill(1), fallbackSegmentation: true };
@@ -239,7 +261,7 @@ function estimateForegroundMask(
 
   const smoothMask = boxBlur(rawMask, width, height, 2);
   for (let i = 0; i < smoothMask.length; i += 1) {
-    smoothMask[i] = smoothMask[i] > 0.33 ? 1 : 0;
+    smoothMask[i] = smoothMask[i] > 0.42 ? 1 : 0;
   }
 
   return { mask: smoothMask, fallbackSegmentation: false };
@@ -251,45 +273,267 @@ function hashNoise(x: number, y: number) {
   return ((t ^ (t >> 16)) >>> 0) / 4294967295;
 }
 
+function resolveFrameOptions(frame?: MotionFrameOptions) {
+  return {
+    phase: frame?.phase ?? 0,
+    flowStrength: clamp01(frame?.flowStrength ?? 0),
+    jitter: clamp01(frame?.jitter ?? 0)
+  };
+}
+
+function buildLightTransfer(
+  norm: Float32Array,
+  edgeMag: Float32Array,
+  fgMask: Float32Array,
+  width: number,
+  height: number
+): LightTransfer {
+  const localLight = boxBlur(norm, width, height, Math.max(10, Math.round(Math.min(width, height) * 0.06)));
+  const detail = new Float32Array(norm.length);
+  for (let i = 0; i < norm.length; i += 1) {
+    detail[i] = Math.abs(norm[i] - localLight[i]);
+  }
+
+  let bestIdx = Math.floor(height * 0.55) * width + Math.floor(width * 0.5);
+  let bestScore = -1;
+  const xMin = Math.floor(width * 0.15);
+  const xMax = Math.floor(width * 0.85);
+  const yMin = Math.floor(height * 0.2);
+  const yMax = Math.floor(height * 0.9);
+
+  for (let y = yMin; y < yMax; y += 1) {
+    for (let x = xMin; x < xMax; x += 1) {
+      const i = y * width + x;
+      const score = fgMask[i] * (0.52 * edgeMag[i] + 0.48 * detail[i]);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+  }
+
+  const refTone = norm[bestIdx];
+  const refDetail = detail[bestIdx];
+  const lockedTone = new Float32Array(norm.length);
+
+  for (let i = 0; i < norm.length; i += 1) {
+    const delta = norm[i] - localLight[i];
+    lockedTone[i] = clamp01(refTone + delta * (1.1 + refDetail * 1.6));
+  }
+
+  const rowEnergy = new Float32Array(height);
+  const rowGain = new Float32Array(height);
+  for (let y = 0; y < height; y += 1) {
+    let sum = 0;
+    for (let x = 0; x < width; x += 1) {
+      const i = y * width + x;
+      sum += fgMask[i] * (0.55 * edgeMag[i] + 0.45 * Math.abs(lockedTone[i] - refTone));
+    }
+    rowEnergy[y] = sum / Math.max(1, width);
+  }
+
+  const smoothEnergy = new Float32Array(height);
+  const rad = 6;
+  for (let y = 0; y < height; y += 1) {
+    let sum = 0;
+    let count = 0;
+    for (let k = -rad; k <= rad; k += 1) {
+      const yy = y + k;
+      if (yy < 0 || yy >= height) continue;
+      sum += rowEnergy[yy];
+      count += 1;
+    }
+    smoothEnergy[y] = sum / Math.max(1, count);
+  }
+
+  const sorted = Array.from(smoothEnergy).sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length * 0.5)] ?? 0.1;
+
+  for (let y = 0; y < height; y += 1) {
+    rowGain[y] = clamp01(median / Math.max(EPS, smoothEnergy[y]));
+    rowGain[y] = 0.72 + rowGain[y] * 0.56;
+  }
+
+  return { lockedTone, rowGain };
+}
+
 function buildInkMap(
   norm: Float32Array,
+  lockedTone: Float32Array,
+  rowGain: Float32Array,
   sobelRes: SobelResult,
   fgMask: Float32Array,
   preset: PipelinePreset,
   width: number,
-  height: number
+  height: number,
+  frame: MotionFrameOptions
 ) {
+  const frameOpts = resolveFrameOptions(frame);
   const detail = new Float32Array(norm.length);
   const smooth = boxBlur(norm, width, height, 2);
+  const edgeNear = boxBlur(sobelRes.mag, width, height, 1);
+  const edgeMid = boxBlur(sobelRes.mag, width, height, Math.max(2, Math.round(preset.grainScale * 0.5)));
+  const edgeFar = boxBlur(sobelRes.mag, width, height, Math.max(4, Math.round(preset.grainScale * 1.5)));
   for (let i = 0; i < norm.length; i += 1) {
     detail[i] = Math.abs(norm[i] - smooth[i]);
   }
 
   const ink = new Float32Array(norm.length);
+  const cx = width * 0.5;
+  const cy = height * 0.58;
+  const sx = width * 0.34;
+  const sy = height * 0.34;
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const i = y * width + x;
       const edge = Math.pow(sobelRes.mag[i], preset.edgeGamma);
-      const fill = Math.pow(norm[i], preset.fillGamma) * fgMask[i];
+      const fill = Math.pow(lockedTone[i], preset.fillGamma) * fgMask[i];
       const angle = Math.atan2(sobelRes.gy[i] + EPS, sobelRes.gx[i] + EPS);
       const oriented = (x * Math.cos(angle) + y * Math.sin(angle)) / Math.max(1, preset.grainScale);
-      const stripe = Math.sin(oriented * 1.9 + angle * 2.7) * 0.5 + 0.5;
-      const noise = hashNoise(x, y) * 0.25;
-      const texture = clamp01(0.78 * stripe + noise);
+      const stripe = Math.sin(oriented * 2.2 + angle * 2.6 + frameOpts.phase * 0.7) * 0.5 + 0.5;
+      const noise = hashNoise(x, y);
+      const texture = clamp01(0.75 * stripe + noise * (0.32 + frameOpts.jitter * 0.12));
+      const flow = clamp01(0.35 * edgeNear[i] + 0.35 * edgeMid[i] + 0.3 * edgeFar[i]);
+      const wavePhase = lockedTone[i] * 1.6 + flow * 2.4 + oriented * 0.08 + frameOpts.phase;
+      const band = Math.abs(Math.sin(wavePhase * Math.PI * preset.bandFrequency));
+      const ghostBand = Math.pow(band, 2.2) * Math.pow(flow, 0.9);
+      const stippleKeep = noise > preset.spaceiness * 0.72 ? 1 : 0.45;
+      const bgKill = Math.pow(clamp01(fgMask[i]), 0.8 + preset.backgroundSuppression);
+      const darkPrior = Math.pow(clamp01(1 - lockedTone[i]), 0.8 + preset.lumaSuppression);
+      const lumaGate = 0.2 + 0.8 * darkPrior;
+      const dx = (x - cx) / Math.max(1, sx);
+      const dy = (y - cy) / Math.max(1, sy);
+      const centerField = Math.exp(-(dx * dx + dy * dy));
+      const centerGate = 1 - preset.centerFocus + preset.centerFocus * clamp01(0.35 + 0.65 * centerField);
+      const yNorm = y / Math.max(1, height - 1);
+      const topFade = 1 - preset.topSuppression * clamp01((0.28 - yNorm) / 0.28);
 
       let v =
         preset.edgeWeight * edge +
         preset.fillWeight * fill +
-        0.26 * detail[i] * fgMask[i] +
-        preset.textureWeight * texture * fgMask[i];
+        0.28 * detail[i] * fgMask[i] +
+        preset.textureWeight * texture * fgMask[i] +
+        preset.ghostWeight * ghostBand * fgMask[i];
 
-      v *= 0.55 + 0.45 * fgMask[i];
+      const flowBoost = 1 + frameOpts.flowStrength * (flow - 0.45) * 0.3;
+      v *= (0.3 + 0.7 * bgKill) * lumaGate * centerGate * topFade * rowGain[y] * stippleKeep * flowBoost;
       ink[i] = clamp01(v);
     }
   }
 
-  return boxBlur(ink, width, height, Math.max(0, Math.round(preset.smoothing)));
+  const smoothed = boxBlur(ink, width, height, Math.max(0, Math.round(preset.smoothing)));
+  const rebalanced = rebalanceInkRows(smoothed, fgMask, width, height);
+  return normalizeByPercentile(rebalanced, 0.01, 0.99);
+}
+
+function rebalanceInkRows(map: Float32Array, fgMask: Float32Array, width: number, height: number) {
+  const rowMean = new Float32Array(height);
+  const rowCount = new Float32Array(height);
+
+  for (let y = 0; y < height; y += 1) {
+    let sum = 0;
+    let count = 0;
+    for (let x = 0; x < width; x += 1) {
+      const i = y * width + x;
+      if (fgMask[i] < 0.15) continue;
+      sum += map[i];
+      count += 1;
+    }
+    rowMean[y] = count ? sum / count : 0;
+    rowCount[y] = count;
+  }
+
+  const activeRows: number[] = [];
+  for (let y = 0; y < height; y += 1) {
+    if (rowCount[y] > width * 0.08) activeRows.push(rowMean[y]);
+  }
+  if (activeRows.length < Math.max(8, Math.floor(height * 0.1))) {
+    return map;
+  }
+
+  activeRows.sort((a, b) => a - b);
+  const target = activeRows[Math.floor(activeRows.length * 0.6)] ?? 0.2;
+  const gains = new Float32Array(height);
+
+  for (let y = 0; y < height; y += 1) {
+    const base = rowMean[y];
+    let gain = target / Math.max(EPS, base);
+    if (rowCount[y] <= width * 0.08) gain = 1;
+    gains[y] = clamp01((gain - 0.4) / 2.6) * 2.6 + 0.4;
+  }
+
+  const smooth = new Float32Array(height);
+  const rad = 10;
+  for (let y = 0; y < height; y += 1) {
+    let sum = 0;
+    let count = 0;
+    for (let k = -rad; k <= rad; k += 1) {
+      const yy = y + k;
+      if (yy < 0 || yy >= height) continue;
+      sum += gains[yy];
+      count += 1;
+    }
+    smooth[y] = sum / Math.max(1, count);
+  }
+
+  const out = new Float32Array(map.length);
+  for (let y = 0; y < height; y += 1) {
+    const g = smooth[y];
+    for (let x = 0; x < width; x += 1) {
+      const i = y * width + x;
+      out[i] = clamp01(map[i] * g);
+    }
+  }
+  return out;
+}
+
+function isolateWhitePixels(
+  data: Uint8Array,
+  guide: Float32Array,
+  width: number,
+  height: number,
+  radius: number
+) {
+  if (radius <= 0) {
+    return new Uint8Array(data);
+  }
+
+  const order: number[] = [];
+  for (let i = 0; i < data.length; i += 1) {
+    if (data[i]) {
+      order.push(i);
+    }
+  }
+
+  order.sort((a, b) => guide[b] - guide[a]);
+  const out = new Uint8Array(data.length);
+
+  for (const idx of order) {
+    const x = idx % width;
+    const y = Math.floor(idx / width);
+    let blocked = false;
+
+    for (let ky = -radius; ky <= radius && !blocked; ky += 1) {
+      for (let kx = -radius; kx <= radius; kx += 1) {
+        if (kx === 0 && ky === 0) continue;
+        if (Math.abs(kx) + Math.abs(ky) > radius) continue;
+        const nx = x + kx;
+        const ny = y + ky;
+        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+        if (out[ny * width + nx]) {
+          blocked = true;
+          break;
+        }
+      }
+    }
+
+    if (!blocked) {
+      out[idx] = 1;
+    }
+  }
+
+  return out;
 }
 
 function bayerDither(map: Float32Array, width: number, height: number, threshold: number) {
@@ -443,6 +687,7 @@ function pruneComponents(
 
 function applyPostProcessing(
   binary: Uint8Array,
+  guide: Float32Array,
   width: number,
   height: number,
   preset: PipelinePreset
@@ -451,14 +696,45 @@ function applyPostProcessing(
 
   if (preset.strokeThickness > 1) {
     out = dilate(out, width, height, preset.strokeThickness - 1);
-    out = erode(out, width, height, 1);
-  } else {
+    if (preset.spaceiness < 0.7) {
+      out = erode(out, width, height, 1);
+    }
+  } else if (preset.spaceiness < 0.7) {
     out = erode(out, width, height, 1);
     out = dilate(out, width, height, 1);
   }
 
-  out = pruneComponents(out, width, height, preset.componentMinArea, preset.componentMaxCount);
+  const minArea = Math.max(1, Math.round(preset.componentMinArea * (1 - preset.spaceiness * 0.7)));
+  const maxCount = Math.max(1000, Math.round(preset.componentMaxCount * (1 + preset.spaceiness * 0.25)));
+  out = pruneComponents(out, width, height, minArea, maxCount);
+
+  if (preset.isolateWhites) {
+    out = isolateWhitePixels(out, guide, width, height, preset.isolationRadius);
+  }
+
   return out;
+}
+
+function applyPostProcessingNoIsolation(
+  binary: Uint8Array,
+  width: number,
+  height: number,
+  preset: PipelinePreset
+) {
+  let out = new Uint8Array(binary);
+  if (preset.strokeThickness > 1) {
+    out = dilate(out, width, height, preset.strokeThickness - 1);
+    if (preset.spaceiness < 0.7) {
+      out = erode(out, width, height, 1);
+    }
+  } else if (preset.spaceiness < 0.7) {
+    out = erode(out, width, height, 1);
+    out = dilate(out, width, height, 1);
+  }
+
+  const minArea = Math.max(1, Math.round(preset.componentMinArea * (1 - preset.spaceiness * 0.7)));
+  const maxCount = Math.max(1000, Math.round(preset.componentMaxCount * (1 + preset.spaceiness * 0.25)));
+  return pruneComponents(out, width, height, minArea, maxCount);
 }
 
 function makeBinary(map: Float32Array, width: number, height: number, preset: PipelinePreset, threshold: number) {
@@ -476,8 +752,8 @@ function autoTune(
   preset: PipelinePreset,
   fallbackSegmentation: boolean
 ): { binary: BinaryImage; metrics: TransformMetrics } {
-  let threshold = 0.5;
-  let step = 0.18;
+  let threshold = 0.34 + preset.spaceiness * 0.04;
+  let step = 0.16;
   let bestData = new Uint8Array(width * height);
   let bestCost = Number.POSITIVE_INFINITY;
   let bestMetrics: TransformMetrics = {
@@ -493,19 +769,40 @@ function autoTune(
   let iter = 0;
   for (iter = 1; iter <= 8; iter += 1) {
     const raw = makeBinary(inkMap, width, height, preset, threshold);
-    const post = applyPostProcessing(raw, width, height, preset);
+    let post = applyPostProcessing(raw, inkMap, width, height, preset);
     const img: BinaryImage = { width, height, data: post };
 
-    const coverage = computeBinaryStats(img).whiteRatio;
+    let coverage = computeBinaryStats(img).whiteRatio;
+    if (coverage < preset.minWhiteCoverageFloor && preset.isolateWhites) {
+      post = applyPostProcessingNoIsolation(raw, width, height, preset);
+      img.data = post;
+      coverage = computeBinaryStats(img).whiteRatio;
+    }
+
     const cc = connectedComponents(img);
     const align = edgeAlignment(img, edgeMap);
+
+    let topWhite = 0;
+    let lowWhite = 0;
+    const topLimit = Math.floor(height * 0.28);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const v = img.data[y * width + x];
+        if (!v) continue;
+        if (y < topLimit) topWhite += 1;
+        else lowWhite += 1;
+      }
+    }
+    const topDensity = topWhite / Math.max(1, topLimit * width);
+    const lowDensity = lowWhite / Math.max(1, (height - topLimit) * width);
 
     const coverageLoss = Math.abs(coverage - preset.whiteCoverageTarget) / Math.max(preset.coverageTolerance, 0.01);
     const componentPenalty = Math.max(0, cc.count - preset.componentMaxCount) / Math.max(1, preset.componentMaxCount);
     const sparsePenalty = cc.count === 0 ? 2 : 0;
-    const edgePenalty = Math.max(0, 0.36 - align) * 2;
+    const edgePenalty = Math.max(0, 0.28 - align) * 1.4;
+    const topBiasPenalty = Math.max(0, topDensity - lowDensity * 1.15) * 18;
 
-    const cost = coverageLoss + componentPenalty + sparsePenalty + edgePenalty;
+    const cost = coverageLoss + componentPenalty + sparsePenalty + edgePenalty + topBiasPenalty;
 
     if (cost < bestCost) {
       bestCost = cost;
@@ -537,6 +834,21 @@ function autoTune(
   };
 }
 
+function autoTuneRescue(
+  inkMap: Float32Array,
+  edgeMap: Float32Array,
+  width: number,
+  height: number,
+  preset: PipelinePreset,
+  fallbackSegmentation: boolean
+): { binary: BinaryImage; metrics: TransformMetrics } {
+  const boosted = normalizeByPercentile(inkMap, 0.005, 0.985);
+  for (let i = 0; i < boosted.length; i += 1) {
+    boosted[i] = clamp01(Math.pow(boosted[i], 0.74) * 1.35);
+  }
+  return autoTune(boosted, edgeMap, width, height, preset, fallbackSegmentation);
+}
+
 function toGray(rgb: Buffer, width: number, height: number) {
   const out = new Float32Array(width * height);
   for (let i = 0; i < width * height; i += 1) {
@@ -548,7 +860,7 @@ function toGray(rgb: Buffer, width: number, height: number) {
   return out;
 }
 
-export async function transformImage(input: Buffer, options: TransformOptions): Promise<TransformResult> {
+export async function analyzeImage(input: Buffer, options: TransformOptions): Promise<AnalysisBundle> {
   const preset = PRESETS[options.presetId] ?? PRESETS['neon-contour'];
 
   const { data, info } = await sharp(input)
@@ -572,8 +884,39 @@ export async function transformImage(input: Buffer, options: TransformOptions): 
     preset.centerBias
   );
 
-  const inkMap = buildInkMap(norm, sobelRes, mask, preset, width, height);
-  const tuned = autoTune(inkMap, sobelRes.mag, width, height, preset, fallbackSegmentation);
+  const lightTransfer = buildLightTransfer(norm, sobelRes.mag, mask, width, height);
+  return {
+    width,
+    height,
+    preset,
+    norm,
+    sobelRes,
+    mask,
+    lightTransfer,
+    fallbackSegmentation
+  };
+}
+
+export async function renderFrameFromAnalysis(
+  analysis: AnalysisBundle,
+  frame?: MotionFrameOptions
+): Promise<TransformResult> {
+  const { width, height, preset, norm, sobelRes, mask, lightTransfer, fallbackSegmentation } = analysis;
+  const inkMap = buildInkMap(
+    norm,
+    lightTransfer.lockedTone,
+    lightTransfer.rowGain,
+    sobelRes,
+    mask,
+    preset,
+    width,
+    height,
+    frame ?? {}
+  );
+  let tuned = autoTune(inkMap, sobelRes.mag, width, height, preset, fallbackSegmentation);
+  if (tuned.metrics.whiteRatio < preset.minWhiteCoverageFloor * 0.9) {
+    tuned = autoTuneRescue(inkMap, sobelRes.mag, width, height, preset, fallbackSegmentation);
+  }
 
   const raw = Buffer.alloc(width * height);
   for (let i = 0; i < raw.length; i += 1) {
@@ -597,4 +940,9 @@ export async function transformImage(input: Buffer, options: TransformOptions): 
     metrics: tuned.metrics,
     preset
   };
+}
+
+export async function transformImage(input: Buffer, options: TransformOptions): Promise<TransformResult> {
+  const analysis = await analyzeImage(input, options);
+  return renderFrameFromAnalysis(analysis);
 }
