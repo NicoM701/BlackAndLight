@@ -5,7 +5,8 @@ export const metadata: Metadata = {
   title: 'Black & Light',
   description: 'Structure-preserving black and white artistic image translation',
   icons: {
-    icon: '/favicon.png'
+    icon: '/logo/favicon.png',
+    shortcut: '/logo/favicon.png'
   }
 };
 

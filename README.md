@@ -1,6 +1,6 @@
 # Black & Light
 
-![Black & Light Logo](logo/BlackAndLight.png)
+![Black & Light Logo](public/logo/BlackAndLight.png)
 
 Structure-preserving artistic image translation into a strict binary look:
 
