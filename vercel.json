@@ -1,0 +1,8 @@
+﻿{
+  "version": 2,
+  "functions": {
+    "app/api/transform/route.ts": {
+      "maxDuration": 30
+    }
+  }
+}
