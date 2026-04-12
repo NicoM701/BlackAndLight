@@ -1,4 +1,4 @@
-﻿export type PresetId =
+export type PresetId =
   | 'neon-contour'
   | 'silhouette-etch'
   | 'industrial-noise'
@@ -35,7 +35,9 @@ export type PipelinePreset = {
   dither: 'floyd' | 'bayer';
 };
 
-export const PRESETS: Record<PresetId, PipelinePreset> = {
+export type PresetSummary = Pick<PipelinePreset, 'id' | 'name' | 'description'>;
+
+export const PRESET_MAP: Record<PresetId, PipelinePreset> = {
   'neon-contour': {
     id: 'neon-contour',
     name: 'Neon Contour',
@@ -183,4 +185,8 @@ export const PRESETS: Record<PresetId, PipelinePreset> = {
   }
 };
 
-export const PRESET_LIST = Object.values(PRESETS);
+export const PRESET_LIST: PresetSummary[] = Object.values(PRESET_MAP).map(({ id, name, description }) => ({
+  id,
+  name,
+  description
+}));

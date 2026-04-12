@@ -1,9 +1,11 @@
-﻿import sharp from 'sharp';
+import sharp from 'sharp';
 import { computeBinaryStats, connectedComponents, edgeAlignment, type BinaryImage, type TransformMetrics } from './metrics';
-import { PRESETS, type PipelinePreset, type PresetId } from './presets';
+import { type PipelinePreset, type PresetId } from './presets';
+import { createSettingsFromPreset, resolvePipelinePreset, type TransformSettings } from './settings';
 
 export type TransformOptions = {
-  presetId: PresetId;
+  presetId?: PresetId;
+  settings?: TransformSettings;
 };
 
 export type MotionFrameOptions = {
@@ -861,7 +863,8 @@ function toGray(rgb: Buffer, width: number, height: number) {
 }
 
 export async function analyzeImage(input: Buffer, options: TransformOptions): Promise<AnalysisBundle> {
-  const preset = PRESETS[options.presetId] ?? PRESETS['neon-contour'];
+  const settings = options.settings ?? createSettingsFromPreset(options.presetId ?? 'neon-contour');
+  const preset = resolvePipelinePreset(settings);
 
   const { data, info } = await sharp(input)
     .rotate()
