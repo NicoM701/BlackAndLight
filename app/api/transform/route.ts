@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getDitherAlgorithmSummary } from '@/lib/dithering';
 import { transformImage } from '@/lib/pipeline';
 import { type PresetId } from '@/lib/presets';
 import { createSettingsFromPreset, sanitizeTransformSettings } from '@/lib/settings';
@@ -17,13 +18,18 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing image file' }, { status: 400 });
     }
 
-    const settings =
-      typeof rawSettings === 'string' && rawSettings.trim()
-        ? sanitizeTransformSettings(JSON.parse(rawSettings))
-        : createSettingsFromPreset(presetId);
+    let settings = createSettingsFromPreset(presetId);
+    if (typeof rawSettings === 'string' && rawSettings.trim()) {
+      try {
+        settings = sanitizeTransformSettings(JSON.parse(rawSettings));
+      } catch {
+        return NextResponse.json({ error: 'Invalid settings payload' }, { status: 400 });
+      }
+    }
 
     const bytes = Buffer.from(await file.arrayBuffer());
     const result = await transformImage(bytes, { settings });
+    const dither = getDitherAlgorithmSummary(result.preset.ditherAlgorithm);
 
     return NextResponse.json({
       imageBase64: result.png.toString('base64'),
@@ -36,6 +42,7 @@ export async function POST(req: Request) {
         name: result.preset.name,
         description: result.preset.description
       },
+      dither,
       settings
     });
   } catch (error) {

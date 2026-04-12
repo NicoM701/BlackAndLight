@@ -1,9 +1,11 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { getDitherAlgorithmSummary, type DitherAlgorithmId } from '@/lib/dithering';
 import { PRESET_LIST, type PresetId } from '@/lib/presets';
 import {
   ADVANCED_CONTROLS,
+  DITHER_OPTIONS,
   createSettingsFromPreset,
   getPresetSummary,
   makeCustomSettings,
@@ -29,6 +31,11 @@ type TransformResponse = {
   };
   preset: {
     id: PresetId;
+    name: string;
+    description: string;
+  };
+  dither: {
+    id: DitherAlgorithmId;
     name: string;
     description: string;
   };
@@ -72,6 +79,7 @@ export default function Page() {
   );
 
   const currentBasePreset = getPresetSummary(settings.presetId);
+  const currentDither = getDitherAlgorithmSummary(settings.ditherAlgorithm);
   const currentHistorySnapshot = history.entries[history.index];
   const hasPendingChanges =
     pendingCommitRef.current !== null &&
@@ -259,6 +267,21 @@ export default function Page() {
     applySettings(nextSettings, { commit: 'immediate', autoRender: true });
   }
 
+  function handleDitherChange(ditherAlgorithm: DitherAlgorithmId) {
+    if (ditherAlgorithm === settingsRef.current.ditherAlgorithm) return;
+
+    const nextDither = getDitherAlgorithmSummary(ditherAlgorithm);
+    const nextSettings = makeCustomSettings(
+      {
+        ...settingsRef.current,
+        ditherAlgorithm
+      },
+      `Manual tune on ${getPresetSummary(settingsRef.current.presetId).name} with ${nextDither.name} dithering.`
+    );
+
+    applySettings(nextSettings, { commit: 'immediate', autoRender: true });
+  }
+
   function handleResetAdvanced() {
     const nextSettings = createSettingsFromPreset(settingsRef.current.presetId);
     applySettings(nextSettings, { commit: 'immediate' });
@@ -347,6 +370,7 @@ export default function Page() {
 
         <div className="chip-row">
           <span className="chip chip-strong">Base style: {currentBasePreset.name}</span>
+          <span className="chip">Dither: {currentDither.name}</span>
           <span className="chip">Current look: {settings.lookLabel}</span>
           <span className="chip">History: {history.index + 1}/{history.entries.length}</span>
         </div>
@@ -391,6 +415,20 @@ export default function Page() {
             </select>
           </label>
 
+          <label className="field">
+            <span>Dithering</span>
+            <select
+              value={settings.ditherAlgorithm}
+              onChange={(event) => handleDitherChange(event.target.value as DitherAlgorithmId)}
+            >
+              {DITHER_OPTIONS.map((algorithm) => (
+                <option key={algorithm.id} value={algorithm.id}>
+                  {algorithm.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
           <button className="run accent-button" type="button" onClick={handleRandomize} disabled={busy}>
             {busy ? 'Cooking...' : 'Randomize look'}
           </button>
@@ -408,6 +446,10 @@ export default function Page() {
           <div>
             <strong>Fast lane</strong>
             <p>Randomize auto-renders and drops each good/bad decision into history so you can walk back instantly.</p>
+          </div>
+          <div>
+            <strong>{currentDither.name}</strong>
+            <p>{currentDither.description}</p>
           </div>
         </div>
 
@@ -473,7 +515,9 @@ export default function Page() {
           {result ? (
             <>
               <img src={`data:${result.mimeType};base64,${result.imageBase64}`} alt="Output preview" />
-              <p className="render-note">{result.preset.description}</p>
+              <p className="render-note">
+                {result.preset.description} · Dither: {result.dither.name}.
+              </p>
             </>
           ) : (
             <div className="empty">Render a look to inspect the result.</div>

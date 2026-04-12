@@ -1,3 +1,5 @@
+import { type DitherAlgorithmId } from './dithering';
+
 export type PresetId =
   | 'neon-contour'
   | 'silhouette-etch'
@@ -32,7 +34,7 @@ export type PipelinePreset = {
   minWhiteCoverageFloor: number;
   centerFocus: number;
   topSuppression: number;
-  dither: 'floyd' | 'bayer';
+  ditherAlgorithm: DitherAlgorithmId;
 };
 
 export type PresetSummary = Pick<PipelinePreset, 'id' | 'name' | 'description'>;
@@ -65,7 +67,7 @@ export const PRESET_MAP: Record<PresetId, PipelinePreset> = {
     minWhiteCoverageFloor: 0.08,
     centerFocus: 0.48,
     topSuppression: 0.34,
-    dither: 'floyd'
+    ditherAlgorithm: 'floyd-steinberg'
   },
   'silhouette-etch': {
     id: 'silhouette-etch',
@@ -94,7 +96,7 @@ export const PRESET_MAP: Record<PresetId, PipelinePreset> = {
     minWhiteCoverageFloor: 0.05,
     centerFocus: 0.42,
     topSuppression: 0.3,
-    dither: 'bayer'
+    ditherAlgorithm: 'bayer-8x8'
   },
   'industrial-noise': {
     id: 'industrial-noise',
@@ -123,7 +125,7 @@ export const PRESET_MAP: Record<PresetId, PipelinePreset> = {
     minWhiteCoverageFloor: 0.12,
     centerFocus: 0.1,
     topSuppression: 0.15,
-    dither: 'floyd'
+    ditherAlgorithm: 'floyd-steinberg'
   },
   'crowd-ghost': {
     id: 'crowd-ghost',
@@ -152,7 +154,7 @@ export const PRESET_MAP: Record<PresetId, PipelinePreset> = {
     minWhiteCoverageFloor: 0.04,
     centerFocus: 0.52,
     topSuppression: 0.52,
-    dither: 'bayer'
+    ditherAlgorithm: 'bayer-8x8'
   },
   'topo-stroke': {
     id: 'topo-stroke',
@@ -181,7 +183,7 @@ export const PRESET_MAP: Record<PresetId, PipelinePreset> = {
     minWhiteCoverageFloor: 0.09,
     centerFocus: 0.45,
     topSuppression: 0.3,
-    dither: 'floyd'
+    ditherAlgorithm: 'floyd-steinberg'
   }
 };
 

@@ -1,7 +1,14 @@
+import {
+  DITHER_ALGORITHM_LIST,
+  isDitherAlgorithmId,
+  type DitherAlgorithmId,
+  type DitherAlgorithmSummary
+} from './dithering';
 import { PRESET_MAP, PRESET_LIST, type PipelinePreset, type PresetId } from './presets';
 
 export type TransformSettings = {
   presetId: PresetId;
+  ditherAlgorithm: DitherAlgorithmId;
   lookId: string;
   lookLabel: string;
   lookDescription: string;
@@ -16,7 +23,15 @@ export type TransformSettings = {
   cleanup: number;
 };
 
-export type ControlKey = Exclude<keyof TransformSettings, 'presetId' | 'lookId' | 'lookLabel' | 'lookDescription'>;
+export type ControlKey = Exclude<
+  keyof TransformSettings,
+  'presetId' | 'ditherAlgorithm' | 'lookId' | 'lookLabel' | 'lookDescription'
+>;
+
+type WeightedDitherAlgorithm = {
+  id: DitherAlgorithmId;
+  weight: number;
+};
 
 export type AdvancedControl = {
   key: ControlKey;
@@ -28,6 +43,8 @@ export type AdvancedControl = {
 };
 
 export const DEFAULT_CONTROL_VALUE = 50;
+
+export const DITHER_OPTIONS: DitherAlgorithmSummary[] = DITHER_ALGORITHM_LIST;
 
 export const ADVANCED_CONTROLS: AdvancedControl[] = [
   {
@@ -170,6 +187,7 @@ type RandomRecipe = {
   description: string;
   weight: number;
   presetIds: PresetId[];
+  ditherAlgorithms: WeightedDitherAlgorithm[];
   ranges: Record<ControlKey, readonly [number, number]>;
 };
 
@@ -180,6 +198,11 @@ const RANDOM_RECIPES: RandomRecipe[] = [
     description: 'Airy contours and good-looking spectral bleed without turning into soup.',
     weight: 1.3,
     presetIds: ['neon-contour', 'topo-stroke'],
+    ditherAlgorithms: [
+      { id: 'atkinson', weight: 1.3 },
+      { id: 'sierra-lite', weight: 1.2 },
+      { id: 'bayer-8x8', weight: 0.85 }
+    ],
     ranges: {
       contour: [58, 86],
       fill: [30, 56],
@@ -198,6 +221,11 @@ const RANDOM_RECIPES: RandomRecipe[] = [
     description: 'Crisp subject readability with denser interior structure and clean framing.',
     weight: 1.1,
     presetIds: ['silhouette-etch', 'neon-contour'],
+    ditherAlgorithms: [
+      { id: 'floyd-steinberg', weight: 1.2 },
+      { id: 'atkinson', weight: 1.05 },
+      { id: 'burkes', weight: 0.9 }
+    ],
     ranges: {
       contour: [48, 74],
       fill: [46, 80],
@@ -216,6 +244,11 @@ const RANDOM_RECIPES: RandomRecipe[] = [
     description: 'Busy, crunchy texture for scenes that want a bit more menace.',
     weight: 1,
     presetIds: ['industrial-noise', 'topo-stroke'],
+    ditherAlgorithms: [
+      { id: 'stucki', weight: 1.15 },
+      { id: 'jarvis-judice-ninke', weight: 1.05 },
+      { id: 'floyd-steinberg', weight: 0.75 }
+    ],
     ranges: {
       contour: [48, 74],
       fill: [40, 66],
@@ -234,6 +267,11 @@ const RANDOM_RECIPES: RandomRecipe[] = [
     description: 'Ghost-heavy clustered white marks that still keep the subject legible.',
     weight: 1.15,
     presetIds: ['crowd-ghost', 'neon-contour'],
+    ditherAlgorithms: [
+      { id: 'atkinson', weight: 1.2 },
+      { id: 'bayer-8x8', weight: 1.05 },
+      { id: 'sierra-lite', weight: 0.95 }
+    ],
     ranges: {
       contour: [42, 66],
       fill: [26, 50],
@@ -252,6 +290,11 @@ const RANDOM_RECIPES: RandomRecipe[] = [
     description: 'Bold, cleaner, punchier silhouettes with very little decorative nonsense.',
     weight: 0.95,
     presetIds: ['silhouette-etch', 'neon-contour'],
+    ditherAlgorithms: [
+      { id: 'floyd-steinberg', weight: 1.1 },
+      { id: 'burkes', weight: 1 },
+      { id: 'sierra-lite', weight: 0.7 }
+    ],
     ranges: {
       contour: [72, 98],
       fill: [34, 62],
@@ -270,6 +313,11 @@ const RANDOM_RECIPES: RandomRecipe[] = [
     description: 'Contour islands and drifting bands that keep landing in nice territory.',
     weight: 1.05,
     presetIds: ['topo-stroke', 'neon-contour'],
+    ditherAlgorithms: [
+      { id: 'atkinson', weight: 1.1 },
+      { id: 'sierra-lite', weight: 1.05 },
+      { id: 'floyd-steinberg', weight: 0.8 }
+    ],
     ranges: {
       contour: [54, 78],
       fill: [32, 58],
@@ -332,6 +380,20 @@ function pickPresetId(recipe: RandomRecipe, current?: TransformSettings) {
   return recipe.presetIds[Math.floor(Math.random() * recipe.presetIds.length)] ?? recipe.presetIds[0];
 }
 
+function pickDitherAlgorithm(recipe: RandomRecipe, presetId: PresetId, current?: TransformSettings) {
+  const fallback = PRESET_MAP[presetId].ditherAlgorithm;
+  if (
+    current?.presetId === presetId &&
+    recipe.ditherAlgorithms.some((entry) => entry.id === current.ditherAlgorithm) &&
+    Math.random() < 0.42
+  ) {
+    return current.ditherAlgorithm;
+  }
+
+  const picked = weightedPick(recipe.ditherAlgorithms);
+  return picked?.id ?? fallback;
+}
+
 function triangularSample(min: number, max: number, mode: number) {
   const low = Math.min(min, max);
   const high = Math.max(min, max);
@@ -358,8 +420,10 @@ function formatBaseLook(presetId: PresetId) {
 }
 
 export function createSettingsFromPreset(presetId: PresetId = 'neon-contour'): TransformSettings {
+  const base = PRESET_MAP[presetId];
   return {
     presetId,
+    ditherAlgorithm: base.ditherAlgorithm,
     ...formatBaseLook(presetId),
     ...PRESET_DEFAULTS[presetId]
   };
@@ -387,6 +451,7 @@ export function sanitizeTransformSettings(input: unknown): TransformSettings {
   const next: TransformSettings = {
     ...fallback,
     presetId,
+    ditherAlgorithm: isDitherAlgorithmId(value.ditherAlgorithm) ? value.ditherAlgorithm : fallback.ditherAlgorithm,
     lookId: typeof value.lookId === 'string' && value.lookId.trim() ? value.lookId : fallback.lookId,
     lookLabel: typeof value.lookLabel === 'string' && value.lookLabel.trim() ? value.lookLabel.trim() : fallback.lookLabel,
     lookDescription:
@@ -415,6 +480,7 @@ export function serializeTransformSettings(settings: TransformSettings) {
   const clean = sanitizeTransformSettings(settings);
   return JSON.stringify({
     presetId: clean.presetId,
+    ditherAlgorithm: clean.ditherAlgorithm,
     lookId: clean.lookId,
     lookLabel: clean.lookLabel,
     lookDescription: clean.lookDescription,
@@ -434,10 +500,12 @@ export function randomizeSettings(current?: TransformSettings): TransformSetting
   const recipe = weightedPick(RANDOM_RECIPES);
   const presetId = pickPresetId(recipe, current);
   const fallback = createSettingsFromPreset(presetId);
+  const ditherAlgorithm = pickDitherAlgorithm(recipe, presetId, current);
 
   const next: TransformSettings = {
     ...fallback,
     presetId,
+    ditherAlgorithm,
     lookId: recipe.id,
     lookLabel: recipe.name,
     lookDescription: recipe.description
@@ -503,7 +571,7 @@ export function resolvePipelinePreset(settings: TransformSettings): PipelinePres
     minWhiteCoverageFloor,
     centerFocus: clampFloat(base.centerFocus + focus * 0.22 - texture * 0.03, 0.02, 0.78),
     topSuppression: clampFloat(base.topSuppression + focus * 0.1 + cleanup * 0.08, 0.05, 0.68),
-    dither: base.dither
+    ditherAlgorithm: clean.ditherAlgorithm
   };
 }
 

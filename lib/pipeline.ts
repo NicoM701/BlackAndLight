@@ -1,4 +1,5 @@
 import sharp from 'sharp';
+import { applyDither } from './dithering';
 import { computeBinaryStats, connectedComponents, edgeAlignment, type BinaryImage, type TransformMetrics } from './metrics';
 import { type PipelinePreset, type PresetId } from './presets';
 import { createSettingsFromPreset, resolvePipelinePreset, type TransformSettings } from './settings';
@@ -538,54 +539,6 @@ function isolateWhitePixels(
   return out;
 }
 
-function bayerDither(map: Float32Array, width: number, height: number, threshold: number) {
-  const bayer8 = [
-    [0, 48, 12, 60, 3, 51, 15, 63],
-    [32, 16, 44, 28, 35, 19, 47, 31],
-    [8, 56, 4, 52, 11, 59, 7, 55],
-    [40, 24, 36, 20, 43, 27, 39, 23],
-    [2, 50, 14, 62, 1, 49, 13, 61],
-    [34, 18, 46, 30, 33, 17, 45, 29],
-    [10, 58, 6, 54, 9, 57, 5, 53],
-    [42, 26, 38, 22, 41, 25, 37, 21]
-  ];
-
-  const out = new Uint8Array(width * height);
-
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const i = y * width + x;
-      const bias = (bayer8[y % 8][x % 8] / 64 - 0.5) * 0.18;
-      out[i] = map[i] > threshold + bias ? 1 : 0;
-    }
-  }
-
-  return out;
-}
-
-function floydDither(map: Float32Array, width: number, height: number, threshold: number) {
-  const work = new Float32Array(map);
-  const out = new Uint8Array(width * height);
-
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const i = y * width + x;
-      const old = work[i];
-      const nw = old >= threshold ? 1 : 0;
-      out[i] = nw;
-
-      const err = old - nw;
-
-      if (x + 1 < width) work[i + 1] += err * (7 / 16);
-      if (y + 1 < height && x > 0) work[i + width - 1] += err * (3 / 16);
-      if (y + 1 < height) work[i + width] += err * (5 / 16);
-      if (y + 1 < height && x + 1 < width) work[i + width + 1] += err * (1 / 16);
-    }
-  }
-
-  return out;
-}
-
 function dilate(src: Uint8Array, width: number, height: number, radius: number) {
   if (radius <= 0) return new Uint8Array(src);
   const dst = new Uint8Array(src.length);
@@ -740,10 +693,7 @@ function applyPostProcessingNoIsolation(
 }
 
 function makeBinary(map: Float32Array, width: number, height: number, preset: PipelinePreset, threshold: number) {
-  if (preset.dither === 'floyd') {
-    return floydDither(map, width, height, threshold);
-  }
-  return bayerDither(map, width, height, threshold);
+  return applyDither(map, width, height, preset.ditherAlgorithm, threshold);
 }
 
 function autoTune(
